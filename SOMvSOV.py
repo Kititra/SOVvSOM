@@ -1,5 +1,12 @@
 # -*- coding: utf-8 -*-
 """
+Created on Tue Mar  4 10:12:43 2025
+
+@author: piotr.kociszewski
+"""
+
+# -*- coding: utf-8 -*-
+"""
 Created on Tue Mar  4 09:11:20 2025
 
 @author: piotr.kociszewski
@@ -24,15 +31,12 @@ def transform_data(df, x_col, y_col):
     # Wyznacz zakres dla gamma – na podstawie wartości x
     x_min = df[x_col].min()
     x_max = df[x_col].max()
-    # Ustal dolną granicę jako x_min + 0.3*(x_max - x_min) i górną jako x_max
     gamma_lower = round(x_min + 0.3*(x_max - x_min), 4)
     gamma_upper = round(x_max, 4)
     
-    # Iteracja przez wszystkie kombinacje alpha i gamma
-    # Używamy kroku dla gamma równym (gamma_upper - gamma_lower) / 100
+    # Szukamy najlepszej transformacji zmiennej x poprzez iterację
     for alpha in np.arange(0.5, 3.0 + 0.001, 0.1):
-        for gamma in np.arange(gamma_lower, gamma_upper + 0.001, (gamma_upper - gamma_lower) / 1000):
-            # new_var = 1 / (1 + (gamma / x)^alpha)
+        for gamma in np.arange(gamma_lower, gamma_upper + 0.001, (gamma_upper - gamma_lower) / 100):
             new_var = 1 / (1 + (gamma / df[x_col])**alpha)
             new_corr = df[y_col].corr(new_var)
             new_r2 = new_corr**2
@@ -42,20 +46,48 @@ def transform_data(df, x_col, y_col):
                 best_alpha = alpha
                 best_gamma = gamma
 
-    # Dodajemy do DataFrame nową kolumnę z transformacją zmiennej niezależnej
+    # Dodajemy do DataFrame kolumnę z transformacją zmiennej niezależnej
     transformed_col_name = f"{x_col} transformed"
     df[transformed_col_name] = best_x_transformed
 
-    # Obliczamy regresję liniową: y = y_col, x = przetransformowanej zmiennej x
-    reg_result = linregress(df[transformed_col_name], df[y_col])
-    intercept = reg_result.intercept
-    slope = reg_result.slope
+    # Obliczamy model liniowy: y = y_col, x = przetransformowanej zmiennej x
+    linreg = linregress(df[transformed_col_name], df[y_col])
+    lin_intercept = linreg.intercept
+    lin_slope = linreg.slope
+    lin_r2 = linreg.rvalue**2
 
-    return df, best_r2, intercept, slope, best_alpha, best_gamma, transformed_col_name
+    # Testujemy modele wielomianowe o stopniach od 2 do 10
+    best_poly_r2 = -np.inf
+    best_poly_coeffs = None
+    best_poly_deg = None
+    for deg in range(2, 11):
+        poly_coeffs = np.polyfit(df[transformed_col_name], df[y_col], deg=deg)
+        y_poly = np.polyval(poly_coeffs, df[transformed_col_name])
+        ss_res = np.sum((df[y_col] - y_poly)**2)
+        ss_tot = np.sum((df[y_col] - np.mean(df[y_col]))**2)
+        poly_r2 = 1 - ss_res/ss_tot
+        if poly_r2 > best_poly_r2:
+            best_poly_r2 = poly_r2
+            best_poly_coeffs = poly_coeffs
+            best_poly_deg = deg
+
+    # Wybieramy ostateczny model: jeśli model wielomianowy (najlepszy z testowanych) ma wyższe R² niż model liniowy,
+    # wybieramy model wielomianowy; w przeciwnym razie model liniowy.
+    if best_poly_r2 > lin_r2:
+        chosen_model = "poly"
+        chosen_r2 = best_poly_r2
+        model_params = best_poly_coeffs  # tablica współczynników wielomianu
+        chosen_poly_deg = best_poly_deg
+    else:
+        chosen_model = "linear"
+        chosen_r2 = lin_r2
+        model_params = (lin_intercept, lin_slope)
+        chosen_poly_deg = None
+
+    return df, chosen_r2, model_params, best_alpha, best_gamma, transformed_col_name, chosen_model, chosen_poly_deg
 
 st.title('Aplikacja do liczenia zależności między zmiennymi')
 
-# Umożliwienie przesłania pliku CSV z wieloliniowym opisem
 uploaded_file = st.file_uploader(
     """Prześlij plik CSV - pamiętaj, że powinien zwierać kolumny:
 Date (data pomiaru),
@@ -68,17 +100,13 @@ oraz dwie dodatkowe kolumny, spośród których wybierzesz:
 
 if uploaded_file is not None:
     try:
-        # Wczytanie danych z pliku CSV
         df = pd.read_csv(uploaded_file)
-        
-        # Sprawdzenie, czy plik zawiera kolumny Date i Brand
         required_cols = ["Date", "Brand"]
         missing_required = [col for col in required_cols if col not in df.columns]
         if missing_required:
             st.error("Plik nie zawiera wymaganych kolumn: " + ", ".join(missing_required))
             st.stop()
         
-        # Pozostałe kolumny – użytkownik wybiera spośród nich zmienne X i Y
         available_cols = [col for col in df.columns if col not in ["Date", "Brand"]]
         if len(available_cols) < 2:
             st.error("Plik musi zawierać co najmniej dwie kolumny oprócz 'Date' i 'Brand'.")
@@ -88,41 +116,44 @@ if uploaded_file is not None:
         y_col = st.selectbox("Wybierz kolumnę jako zmienną zależną (prognozowaną, oś Y):", available_cols, index=1)
         
         st.write("Podgląd danych:", df.head())
-        
-        # Usuwamy obserwacje, w których brakuje wartości w wybranych zmiennych
         df = df.dropna(subset=[x_col, y_col])
         
-        # Transformacja danych i obliczenia regresji – kryterium wyboru to maksymalne R²
-        (transformed_df, best_r2, intercept, slope,
-         best_alpha, best_gamma, transformed_col_name) = transform_data(df, x_col, y_col)
+        (transformed_df, chosen_r2, model_params, best_alpha, best_gamma,
+         transformed_col_name, chosen_model, chosen_poly_deg) = transform_data(df, x_col, y_col)
         
-        if best_r2 is not None:
-            st.write(f"Najlepszy współczynnik R² między '{y_col}' a '{transformed_col_name}':", best_r2)
-            st.write("Model regresji liniowej:")
-            st.write("Stała (intercept):", intercept)
-            st.write(f"Współczynnik przy '{transformed_col_name}' (beta):", slope)
+        if chosen_r2 is not None:
+            if chosen_model == "linear":
+                st.write(f"Wybrany model (regresja liniowa) osiąga R² = {chosen_r2}")
+                st.write("Model regresji liniowej:")
+                st.write("Stała (intercept):", model_params[0])
+                st.write(f"Współczynnik przy '{transformed_col_name}' (beta):", model_params[1])
+            else:
+                st.write(f"Wybrany model (regresja wielomianowa stopnia {chosen_poly_deg}) osiąga R² = {chosen_r2}")
+                st.write("Współczynniki modelu wielomianowego:", model_params)
         else:
             st.warning("Nie udało się obliczyć współczynnika R².")
         
         st.write("Dane po transformacji:", transformed_df.head())
         
-        # Dodaj kolumnę z prognozowanymi wartościami dla y
-        transformed_df[f"Predicted {y_col}"] = intercept + slope * transformed_df[transformed_col_name]
+        # Dodajemy kolumnę z prognozowanymi wartościami dla y w zależności od wybranego modelu
+        if chosen_model == "linear":
+            transformed_df[f"Predicted {y_col}"] = model_params[0] + model_params[1] * transformed_df[transformed_col_name]
+        else:
+            transformed_df[f"Predicted {y_col}"] = np.polyval(model_params, transformed_df[transformed_col_name])
         
-        # Interaktywny wykres regresji z Plotly
         if st.button("Pokaż interaktywny wykres regresji"):
-            # Ustalenie zakresów osi: wykorzystujemy wartości oryginalnej zmiennej x i y
             x_max_plot = 1.2 * df[x_col].max()
             y_max_plot = 1.2 * df[y_col].max()
-            
-            # Przygotowanie punktów do wykresu linii regresji
             x_values = np.linspace(1e-6, x_max_plot, 100)
             transformed_x_line = 1 / (1 + (best_gamma / x_values)**best_alpha)
-            y_line = intercept + slope * transformed_x_line
+            if chosen_model == "linear":
+                y_line = model_params[0] + model_params[1] * transformed_x_line
+                model_label = f"Linia regresji: y = {round(model_params[0],2)} + {round(model_params[1],2)} * {transformed_col_name}"
+            else:
+                y_line = np.polyval(model_params, transformed_x_line)
+                model_label = f"Regresja wielomianowa (stopnia {chosen_poly_deg})"
             
             fig = go.Figure()
-            
-            # Przygotowanie danych do hover – wyświetlamy również Brand i Date
             if "Brand" in df.columns and "Date" in df.columns:
                 customdata = np.stack([df["Brand"], df["Date"]], axis=-1)
                 hovertemplate = (
@@ -135,7 +166,6 @@ if uploaded_file is not None:
                 customdata = None
                 hovertemplate = f"{x_col}: %{{x}}<br>{y_col}: %{{y}}<extra></extra>"
             
-            # Dodanie wykresu punktowego oryginalnych danych
             fig.add_trace(go.Scatter(
                 x = df[x_col],
                 y = df[y_col],
@@ -145,16 +175,13 @@ if uploaded_file is not None:
                 customdata = customdata,
                 hovertemplate = hovertemplate
             ))
-            
-            # Dodanie linii regresji
             fig.add_trace(go.Scatter(
                 x = x_values,
                 y = y_line,
                 mode = "lines",
                 line = dict(color='#1f77b4'),
-                name = f"Linia regresji: y = {round(intercept,2)} + {round(slope,2)} * {transformed_col_name}"
+                name = model_label
             ))
-            
             fig.update_layout(
                 title = dict(text="Interaktywny wykres regresji", font=dict(size=20)),
                 xaxis_title = dict(text=x_col, font=dict(size=18)),
@@ -164,18 +191,18 @@ if uploaded_file is not None:
             )
             st.plotly_chart(fig)
         
-        # Sekcja do prognozowania – użytkownik wprowadza wartość zmiennej niezależnej
         st.subheader("Prognoza dla nowej wartości zmiennej niezależnej")
         user_input = st.number_input(f"Wprowadź wartość {x_col}:", 
                                      min_value=float(df[x_col].min()),
                                      max_value=float(df[x_col].max()),
                                      value=float(df[x_col].mean()))
-        # Przekształcamy wartość wprowadzoną przez użytkownika według znalezionych parametrów
         transformed_input = 1 / (1 + (best_gamma / user_input)**best_alpha)
-        predicted_y = intercept + slope * transformed_input
+        if chosen_model == "linear":
+            predicted_y = model_params[0] + model_params[1] * transformed_input
+        else:
+            predicted_y = np.polyval(model_params, transformed_input)
         st.write(f"Prognozowana wartość {y_col} dla {x_col} = {user_input}: {predicted_y}")
         
-        # Pobieranie przekształconego pliku CSV – zawiera on oryginalne kolumny, kolumnę transformacji oraz prognozowane wartości
         csv = transformed_df.to_csv(index=False).encode('utf-8')
         st.download_button(
             label="Pobierz przekształcony plik CSV",
