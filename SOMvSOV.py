@@ -12,9 +12,8 @@ from scipy.stats import linregress
 import plotly.graph_objects as go
 
 def transform_data(df, x_col, y_col, lag=0):
-    # Apply lag only within each Brand group
+    # Apply lag only within each Brand group (using the natural Date order)
     if lag != 0:
-        # Shift the independent variable within each Brand group based on Date order
         x_series = df.groupby("Brand")[x_col].shift(lag)
     else:
         x_series = df[x_col]
@@ -40,7 +39,7 @@ def transform_data(df, x_col, y_col, lag=0):
     # Search for the best transformation of the lagged x variable using:
     # new_var = 1 / (1 + (gamma / x)^alpha)
     for alpha in np.arange(0.5, 3.0 + 0.001, 0.1):
-        for gamma in np.arange(gamma_lower, gamma_upper + 0.001, (gamma_upper - gamma_lower) / 100):
+        for gamma in np.arange(gamma_lower, gamma_upper + 0.001, (gamma_upper - gamma_lower) / 500):
             new_var = 1 / (1 + (gamma / df["_lagged_x_"])**alpha)
             new_corr = df[y_col].corr(new_var)
             new_r2 = new_corr**2
@@ -58,16 +57,18 @@ def transform_data(df, x_col, y_col, lag=0):
     # Drop rows with NaN in the transformed variable (which might have resulted from the lag)
     df = df.dropna(subset=[transformed_col_name, y_col])
     
-    # Compute linear regression on the transformed variable
-    linreg = linregress(df[transformed_col_name], df[y_col])
-    lin_intercept = linreg.intercept
-    lin_slope = linreg.slope
-    lin_r2 = linreg.rvalue**2
-
-    # Test polynomial models (degrees 2 to 20) on the transformed variable
+    # ---------------- Linear Regression Model ----------------
+    linreg_result = linregress(df[transformed_col_name], df[y_col])
+    lin_intercept = linreg_result.intercept
+    lin_slope = linreg_result.slope
+    lin_r2 = linreg_result.rvalue**2
+    linear_model = {"intercept": lin_intercept, "slope": lin_slope, "r2": lin_r2}
+    
+    # ---------------- Polynomial Regression Model ----------------
     best_poly_r2 = -np.inf
     best_poly_coeffs = None
     best_poly_deg = None
+    # Testing polynomial degrees 2 to 20 (adjust as needed)
     for deg in range(2, 5):
         poly_coeffs = np.polyfit(df[transformed_col_name], df[y_col], deg=deg)
         y_poly = np.polyval(poly_coeffs, df[transformed_col_name])
@@ -78,20 +79,16 @@ def transform_data(df, x_col, y_col, lag=0):
             best_poly_r2 = poly_r2
             best_poly_coeffs = poly_coeffs
             best_poly_deg = deg
-
-    # Choose the final model based on the highest R²
+    poly_model = {"coeffs": best_poly_coeffs, "deg": best_poly_deg, "r2": best_poly_r2}
+    
+    # ---------------- Choose "Auto" model ----------------
+    # Auto-selection picks the model with the higher R²
     if best_poly_r2 > lin_r2:
-        chosen_model = "poly"
-        chosen_r2 = best_poly_r2
-        model_params = best_poly_coeffs  # polynomial coefficients array
-        chosen_poly_deg = best_poly_deg
+        auto_model = {"type": "poly", "params": best_poly_coeffs, "r2": best_poly_r2, "deg": best_poly_deg}
     else:
-        chosen_model = "linear"
-        chosen_r2 = lin_r2
-        model_params = (lin_intercept, lin_slope)
-        chosen_poly_deg = None
+        auto_model = {"type": "linear", "params": (lin_intercept, lin_slope), "r2": lin_r2}
 
-    return df, chosen_r2, model_params, best_alpha, best_gamma, transformed_col_name, chosen_model, chosen_poly_deg
+    return df, best_r2, linear_model, poly_model, auto_model, best_alpha, best_gamma, transformed_col_name
 
 st.title('Aplikacja do liczenia zależności między zmiennymi')
 
@@ -133,11 +130,34 @@ if uploaded_file is not None:
         df = df.dropna(subset=[x_col, y_col])
         
         # Allow the user to specify a lag value (applied by brand, using the Date order)
-        lag = st.number_input(f"Wprowadź wartość lag dla zmiennej {x_col} (liczba całkowita, 1 = opóźnienie o jeden okres czasu):", 
+        lag = st.number_input(f"Wprowadź wartość lag dla zmiennej {x_col} (liczba całkowita, np. 1 = opóźnienie o jeden okres):", 
                               min_value=-100, max_value=100, value=0, step=1)
         
-        (transformed_df, chosen_r2, model_params, best_alpha, best_gamma,
-         transformed_col_name, chosen_model, chosen_poly_deg) = transform_data(df, x_col, y_col, lag)
+        (transformed_df, best_r2_val, linear_model, poly_model, auto_model, 
+         best_alpha, best_gamma, transformed_col_name) = transform_data(df, x_col, y_col, lag)
+        
+        # Let the user choose which model to display:
+        model_choice = st.radio(
+            "Wybierz model do wyświetlenia:",
+            options=["Auto (najlepszy)", "Regresja liniowa", "Regresja wielomianowa"],
+            index=0
+        )
+        
+        if model_choice == "Auto (najlepszy)":
+            chosen_model = auto_model["type"]
+            chosen_r2 = auto_model["r2"]
+            model_params = auto_model["params"]
+            chosen_poly_deg = auto_model.get("deg", None)
+        elif model_choice == "Regresja liniowa":
+            chosen_model = "linear"
+            chosen_r2 = linear_model["r2"]
+            model_params = (linear_model["intercept"], linear_model["slope"])
+            chosen_poly_deg = None
+        else:  # "Regresja wielomianowa"
+            chosen_model = "poly"
+            chosen_r2 = poly_model["r2"]
+            model_params = poly_model["coeffs"]
+            chosen_poly_deg = poly_model["deg"]
         
         if chosen_r2 is not None:
             if chosen_model == "linear":
