@@ -133,7 +133,7 @@ if uploaded_file is not None:
         df = df.dropna(subset=[x_col, y_col])
         
         # Allow the user to specify a lag value (applied by brand, using the Date order)
-        lag = st.number_input(f"Wprowadź wartość lag dla zmiennej {x_col} (liczba całkowita, 0 = brak opóźnienia):", 
+        lag = st.number_input(f"Wprowadź wartość lag dla zmiennej {x_col} (liczba całkowita, 1 = opóźnienie o jeden okres czasu):", 
                               min_value=-100, max_value=100, value=0, step=1)
         
         (transformed_df, chosen_r2, model_params, best_alpha, best_gamma,
