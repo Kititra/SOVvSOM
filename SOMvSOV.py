@@ -60,7 +60,7 @@ def transform_data(df, x_col, y_col):
     best_poly_r2 = -np.inf
     best_poly_coeffs = None
     best_poly_deg = None
-    for deg in range(2, 11):
+    for deg in range(2, 21):
         poly_coeffs = np.polyfit(df[transformed_col_name], df[y_col], deg=deg)
         y_poly = np.polyval(poly_coeffs, df[transformed_col_name])
         ss_res = np.sum((df[y_col] - y_poly)**2)
