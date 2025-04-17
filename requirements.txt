@@ -3,4 +3,6 @@ pandas
 numpy
 scipy
 plotly
-pyarrow
+google-genai
+vertexai
+google-auth
